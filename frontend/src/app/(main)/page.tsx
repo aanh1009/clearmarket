@@ -1,7 +1,7 @@
 import Link from "next/link";
-import { mockNews, categoryLabels, getTimeAgo } from "@/lib/mockNews";
+import { categoryLabels, getTimeAgo, NewsArticle } from "@/lib/mockNews";
 
-const previewArticles = mockNews.filter((a) => a.trending).slice(0, 3);
+const previewArticles: NewsArticle[] = [];
 
 export default function Home() {
   return (
@@ -230,14 +230,14 @@ export default function Home() {
                       className="text-[10px] font-bold font-mono"
                       style={{ color: article.imageColor }}
                     >
-                      {article.tickers[0] || categoryLabels[article.category].slice(0, 3).toUpperCase()}
+                      {article.symbols[0] || categoryLabels[article.category].slice(0, 3).toUpperCase()}
                     </span>
                   </div>
                   <div className="flex-1 min-w-0 space-y-1">
                     <div className="flex items-center gap-2 text-[10px] text-muted">
                       <span className="font-medium">{article.source}</span>
                       <span>&middot;</span>
-                      <span>{getTimeAgo(article.timestamp)}</span>
+                      <span>{getTimeAgo(article.publishedAt)}</span>
                     </div>
                     <h3 className="text-sm font-semibold text-foreground leading-snug line-clamp-1 group-hover:text-accent transition-colors">
                       {article.title}
