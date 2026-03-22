@@ -88,8 +88,8 @@ app.post('/api/auth/login', async (req, res) => {
         if (!email || !password) {
             return res.status(400).json({ error: 'email and password are required' });
         }
-        const user = await logIn(email, password);
-        res.json(user);
+        const { user, session } = await logIn(email, password);
+        res.json({ user: { id: user.id, email: user.email }, token: session?.access_token ?? '' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -354,90 +354,6 @@ app.post('/api/admin/news/sync', (_req, res) => {
     res.status(501).json({ error: 'News sync not available' });
 });
 
-// GET /api/leaderboard
-app.get('/api/leaderboard', async (req, res) => {
-    try {
-        const { data: profiles, error: profilesError } = await supabase
-            .from('profiles')
-            .select('id, username');
-        if (profilesError) return res.status(500).json({ error: profilesError.message });
-
-        const { data: portfolios, error: portfoliosError } = await supabase
-            .from('portfolios')
-            .select('user_id, ticker, shares, avg_cost, account_value');
-        if (portfoliosError) return res.status(500).json({ error: portfoliosError.message });
-
-        const STARTING_BALANCE = 10000;
-        const leaderboard = await Promise.all(
-            (profiles || []).map(async (profile) => {
-                const userHoldings = portfolios.filter(p => p.user_id === profile.id);
-                let portfolioValue = 0;
-                for (const holding of userHoldings) {
-                    try {
-                        const stockData = await getStockPrice(holding.ticker);
-                        portfolioValue += stockData.price * holding.shares;
-                    } catch {
-                        portfolioValue += holding.avg_cost * holding.shares;
-                    }
-                }
-                const cashBalance = userHoldings.length > 0 ? userHoldings[0].account_value : STARTING_BALANCE;
-                const totalValue = cashBalance + portfolioValue;
-                const percentGain = ((totalValue - STARTING_BALANCE) / STARTING_BALANCE) * 100;
-                return {
-                    user_id: profile.id,
-                    username: profile.username || 'Anonymous',
-                    total_value: Math.round(totalValue * 100) / 100,
-                    percent_gain: Math.round(percentGain * 100) / 100,
-                };
-            })
-        );
-
-        leaderboard.sort((a, b) => b.percent_gain - a.percent_gain);
-        res.json(leaderboard);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// POST /api/portfolio/copy
-app.post('/api/portfolio/copy', async (req, res) => {
-    try {
-        const { from_user_id, to_user_id } = req.body;
-        if (!from_user_id || !to_user_id) {
-            return res.status(400).json({ error: 'from_user_id and to_user_id are required' });
-        }
-
-        const { data: sourceHoldings, error: sourceError } = await supabase
-            .from('portfolios')
-            .select('*')
-            .eq('user_id', from_user_id);
-        if (sourceError) return res.status(500).json({ error: sourceError.message });
-
-        const { error: deleteError } = await supabase
-            .from('portfolios')
-            .delete()
-            .eq('user_id', to_user_id);
-        if (deleteError) return res.status(500).json({ error: deleteError.message });
-
-        if (sourceHoldings && sourceHoldings.length > 0) {
-            const newHoldings = sourceHoldings.map(h => ({
-                user_id: to_user_id,
-                ticker: h.ticker,
-                company_name: h.company_name,
-                shares: h.shares,
-                avg_cost: h.avg_cost,
-                account_value: h.account_value,
-                is_simulated: true,
-            }));
-            const { error: insertError } = await supabase.from('portfolios').insert(newHoldings);
-            if (insertError) return res.status(500).json({ error: insertError.message });
-        }
-
-        res.json({ message: 'Portfolio copied successfully' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
 
 // GET /api/user_news/:userId
 app.get('/api/user_news/:userId', async (req, res) => {
@@ -471,35 +387,130 @@ app.post('/api/user_news/mark-seen', async (req, res) => {
     }
 });
 
-let server;
+// GET /api/leaderboard
+app.get('/api/leaderboard', async (_req, res) => {
+    try {
+        const { data: profiles, error: profileErr } = await supabase.from('profiles').select('id, username');
+        if (profileErr) return res.status(500).json({ error: profileErr.message });
 
-function nextPort(port) {
-    const current = Number(port);
-    if (current === 3000) return 3001;
-    if (current === 3001) return 3002;
-    return current + 1;
-}
+        const { data: allPortfolios, error: portErr } = await supabase.from('portfolios').select('*');
+        if (portErr) return res.status(500).json({ error: portErr.message });
 
-function startServer(port, attempt = 0) {
-    const activeServer = app.listen(port, () => {
-        console.log(`Server running on port ${port}`);
-    });
+        const tickers = [...new Set((allPortfolios || []).map(p => p.ticker))];
+        const prices = {};
+        await Promise.all(tickers.map(async (ticker) => {
+            try {
+                const data = await getStockPrice(ticker);
+                prices[ticker] = data.price;
+            } catch {
+                // fallback to avg_cost below
+            }
+        }));
 
-    activeServer.on('error', (err) => {
-        if (err.code === 'EADDRINUSE' && attempt < 3) {
-            const fallbackPort = nextPort(port);
-            console.warn(`Port ${port} is in use. Retrying on port ${fallbackPort}...`);
-            server = startServer(fallbackPort, attempt + 1);
-            return;
+        const byUser = {};
+        for (const row of (allPortfolios || [])) {
+            if (!byUser[row.user_id]) byUser[row.user_id] = [];
+            byUser[row.user_id].push(row);
         }
-        console.error('Server error:', err);
-        process.exit(1);
-    });
 
-    return activeServer;
-}
+        const STARTING_BALANCE = 10000;
+        const leaderboard = (profiles || []).map(profile => {
+            const holdings = byUser[profile.id] || [];
+            const cashBalance = holdings.length > 0 ? holdings[0].account_value : STARTING_BALANCE;
+            const stockValue = holdings.reduce((sum, h) => sum + (prices[h.ticker] || h.avg_cost) * h.shares, 0);
+            const totalValue = cashBalance + stockValue;
+            const gainAmount = Math.round((totalValue - STARTING_BALANCE) * 100) / 100;
+            const gainPercent = Math.round((gainAmount / STARTING_BALANCE) * 10000) / 100;
+            return {
+                user_id: profile.id,
+                username: profile.username,
+                total_value: Math.round(totalValue * 100) / 100,
+                gain_amount: gainAmount,
+                gain_percent: gainPercent,
+                positions: holdings.map(h => ({ ticker: h.ticker, shares: h.shares })),
+            };
+        });
 
-server = startServer(PORT, 0);
+        leaderboard.sort((a, b) => b.gain_percent - a.gain_percent);
+        res.json(leaderboard);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /api/portfolio/copy
+app.post('/api/portfolio/copy', async (req, res) => {
+    try {
+        const { user_id, target_user_id } = req.body;
+        if (!user_id || !target_user_id) return res.status(400).json({ error: 'user_id and target_user_id required' });
+        if (user_id === target_user_id) return res.status(400).json({ error: 'Cannot copy your own portfolio' });
+
+        const { data: targetPositions } = await supabase.from('portfolios').select('*').eq('user_id', target_user_id);
+        if (!targetPositions || targetPositions.length === 0)
+            return res.status(400).json({ error: 'Target has no positions to copy' });
+
+        const prices = {};
+        await Promise.all(targetPositions.map(async (pos) => {
+            try {
+                const data = await getStockPrice(pos.ticker);
+                prices[pos.ticker] = data.price;
+            } catch {
+                prices[pos.ticker] = pos.avg_cost;
+            }
+        }));
+
+        const targetStockValue = targetPositions.reduce((sum, pos) => sum + (prices[pos.ticker] || pos.avg_cost) * pos.shares, 0);
+        if (targetStockValue <= 0) return res.status(400).json({ error: 'Target has no stock value to copy' });
+
+        const { data: userHoldings } = await supabase.from('portfolios').select('*').eq('user_id', user_id);
+        let remainingCash = userHoldings?.[0]?.account_value ?? 10000;
+        if (remainingCash <= 0) return res.status(400).json({ error: 'No cash available to copy portfolio' });
+
+        // Calculate purchases proportional to target allocation
+        const purchases = [];
+        for (const pos of targetPositions) {
+            const price = prices[pos.ticker];
+            if (!price) continue;
+            const allocation = (price * pos.shares) / targetStockValue;
+            const sharesToBuy = Math.floor((remainingCash * allocation) / price);
+            if (sharesToBuy <= 0) continue;
+            const cost = Math.round(sharesToBuy * price * 100) / 100;
+            if (cost > remainingCash) continue;
+            purchases.push({ ticker: pos.ticker, shares: sharesToBuy, price, cost });
+            remainingCash -= cost;
+        }
+
+        if (purchases.length === 0) return res.status(400).json({ error: 'Not enough cash to buy any shares' });
+
+        // Execute purchases
+        for (const p of purchases) {
+            const existing = (userHoldings || []).find(h => h.ticker === p.ticker);
+            if (existing) {
+                const totalShares = existing.shares + p.shares;
+                const newAvgCost = Math.round(((existing.avg_cost * existing.shares + p.cost) / totalShares) * 100) / 100;
+                await supabase.from('portfolios').update({
+                    shares: totalShares, avg_cost: newAvgCost, updated_at: new Date().toISOString()
+                }).eq('id', existing.id);
+            } else {
+                await supabase.from('portfolios').insert({
+                    user_id, ticker: p.ticker, company_name: p.ticker,
+                    shares: p.shares, avg_cost: p.price, account_value: 0, is_simulated: true
+                });
+            }
+        }
+
+        const finalCash = Math.round(remainingCash * 100) / 100;
+        await supabase.from('portfolios').update({ account_value: finalCash }).eq('user_id', user_id);
+
+        res.json({ message: 'Portfolio copied', bought: purchases.map(p => ({ ticker: p.ticker, shares: p.shares })), remaining_cash: finalCash });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+const server = app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+});
 
 // Keep the process alive
 process.on('SIGTERM', () => {
