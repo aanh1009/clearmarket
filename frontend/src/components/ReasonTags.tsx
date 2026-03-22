@@ -5,6 +5,16 @@ const tagLabels: Record<ReasonTag, string> = {
   economy: "Economy",
   competition: "Competition",
   regulation: "Regulation",
+  stocks: "Stocks",
+  "interest-rates": "Interest Rates",
+  inflation: "Inflation",
+  crypto: "Crypto",
+  bonds: "Bonds",
+  housing: "Housing",
+  jobs: "Jobs",
+  energy: "Energy",
+  tech: "Tech",
+  banking: "Banking",
 };
 
 export default function ReasonTags({ tags }: { tags: ReasonTag[] }) {
