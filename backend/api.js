@@ -19,24 +19,21 @@ async function getStockPrice(ticker) {
         throw new Error('Invalid ticker: must be a non-empty string.');
     }
     const symbol = ticker.trim().toUpperCase();
-    const url = `https://financialmodelingprep.com/api/v3/quote-short/${encodeURIComponent(symbol)}?apikey=${encodeURIComponent(process.env.FMP_API_KEY)}`;
-
+    const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${process.env.ALPHA_API_KEY}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`Request failed with status ${res.status}`);
-
     const data = await res.json();
-    if (!Array.isArray(data) || data.length === 0) {
+    const quote = data["Global Quote"];
+    if (!quote || !quote["05. price"]) {
         throw new Error(`No data found for "${symbol}".`);
     }
-
-    const quote = data[0];
     return {
-        ticker: quote.symbol,
-        price: quote.price,
-        volume: quote.volume,
+        ticker: quote["01. symbol"],
+        price: parseFloat(quote["05. price"]),
+        volume: parseInt(quote["06. volume"]),
+        change: quote["10. change percent"],
     };
 }
-
 // --- Sentiment (AlphaVantage) ---
 
 async function getSentiment(symbols) {
