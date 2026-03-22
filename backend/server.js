@@ -1,7 +1,7 @@
 require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 const express = require('express');
 const cors = require('cors');
-const { getTrending, getStockPrice, getSentiment, explainStock } = require('./api');
+const { getTrending, getStockPrice, getSentiment, explainStock, signUp, logIn, logOut } = require('./api');
 const supabase = require('./db');
 
 const app = express();
@@ -195,6 +195,46 @@ app.post('/api/trade/sell', async (req, res) => {
     });
 
     res.json({ message: 'Sell successful', remaining_balance: newBalance });
+});
+
+// POST /api/auth/signup
+// Body: { email, password, username }
+app.post('/api/auth/signup', async (req, res) => {
+    const { email, password, username } = req.body;
+    if (!email || !password || !username) {
+        return res.status(400).json({ error: 'email, password, and username are required' });
+    }
+    try {
+        const user = await signUp(email, password, username);
+        res.json({ message: 'Account created successfully', user });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /api/auth/login
+// Body: { email, password }
+app.post('/api/auth/login', async (req, res) => {
+    const { email, password } = req.body;
+    if (!email || !password) {
+        return res.status(400).json({ error: 'email and password are required' });
+    }
+    try {
+        const user = await logIn(email, password);
+        res.json({ message: 'Logged in successfully', user });
+    } catch (err) {
+        res.status(401).json({ error: err.message });
+    }
+});
+
+// POST /api/auth/logout
+app.post('/api/auth/logout', async (req, res) => {
+    try {
+        await logOut();
+        res.json({ message: 'Logged out successfully' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.listen(PORT, () => {
